@@ -1,38 +1,36 @@
+// @ts-check
 // Process front matter and pass to cb
 //
 'use strict';
 
 module.exports = function front_matter_plugin(md, cb) {
   var min_markers = 3,
-      marker_str  = '-',
-      marker_char = marker_str.charCodeAt(0),
-      marker_len  = marker_str.length
+      marker_char  = '-'
 
   function frontMatter(state, startLine, endLine, silent) {
-    var pos, nextLine, marker_count, markup, token,
-        old_parent, old_line_max, start_content,
-        auto_closed = false,
-        start = state.bMarks[startLine] + state.tShift[startLine],
-        max = state.eMarks[startLine];
+    var pos, currentLine, marker_count, token,
+        old_parent, old_line_max,
+        front_matter_end_found = false,
+        lineFirstCharIndex = state.bMarks[startLine] + state.tShift[startLine],
+        lineLastCharIndex = state.eMarks[startLine];
 
     // Check out the first character of the first line quickly,
     // this should filter out non-front matter
     //
-    if (startLine !== 0 || marker_char !== state.src.charCodeAt(0)) { return false; }
+
+    // Ensure starting at line 0 and first line contains 3+ dashes ending in return or carriage return
+    if (startLine !== 0 || !/^---+\s*$/.test(state.src.slice(lineFirstCharIndex, lineLastCharIndex))) { return false; }
 
     // Check out the rest of the marker string
     //
-    for (pos = start + 1; pos <= max; pos++) { // while pos <= 3
-      if (marker_str[(pos - start) % marker_len] !== state.src[pos]) {
-        start_content = pos + 1
-        break;
-      }
-    }
+    const start_content = lineLastCharIndex + 1;
 
-    marker_count = Math.floor((pos - start) / marker_len);
+    marker_count = state.src.slice(lineFirstCharIndex, lineLastCharIndex).split("-").length - 1;
 
     if (marker_count < min_markers) { return false; }
-    pos -= (pos - start) % marker_len;
+    
+    // Handle carriage return case
+    pos = 0;
 
     // Since start is found, we can report success here in validation mode
     //
@@ -40,50 +38,60 @@ module.exports = function front_matter_plugin(md, cb) {
 
     // Search for the end of the block
     //
-    nextLine = startLine;
+    currentLine = startLine;
 
     for (;;) {
-      nextLine++;
-      if (nextLine >= endLine) {
+      currentLine++;
+      if (currentLine >= endLine) {
         // unclosed block should be autoclosed by end of document.
         // also block seems to be autoclosed by end of parent
         break;
       }
 
-      start = state.bMarks[nextLine] + state.tShift[nextLine];
-      max = state.eMarks[nextLine];
+      // bMarks: line starts
+      // tShift: tab shifts
+      // eMarks: end marks
+      // --> start: start of line     max: end of line
+      lineFirstCharIndex = state.bMarks[currentLine] + state.tShift[currentLine];
+      lineLastCharIndex = state.eMarks[currentLine];
 
-      if (start < max && state.sCount[nextLine] < state.blkIndent) {
+      if (lineFirstCharIndex < lineLastCharIndex && state.sCount[currentLine] < state.blkIndent) {
         // non-empty line with negative indent should stop the list:
         // - ```
         //  test
         break;
       }
 
-      if (marker_char !== state.src.charCodeAt(start)) { continue; }
+      var benchmarkChar;
+      if (marker_char !== state.src[lineFirstCharIndex] && '.' !== state.src[lineFirstCharIndex]){ 
+        continue;
+      }
+      else{
+        benchmarkChar = state.src[lineFirstCharIndex];
+      }
+      
 
-      if (state.sCount[nextLine] - state.blkIndent >= 4) {
+      if (state.sCount[currentLine] - state.blkIndent >= 4) {
         // closing fence should be indented less than 4 spaces
         continue;
       }
 
-      for (pos = start + 1; pos <= max; pos++) {
-        if (marker_str[(pos - start) % marker_len] !== state.src[pos]) {
+      for (pos = lineFirstCharIndex + 1; pos <= lineLastCharIndex; pos++) {
+        if (benchmarkChar !== state.src[pos]) {
           break;
         }
       }
 
       // closing code fence must be at least as long as the opening one
-      if (Math.floor((pos - start) / marker_len) < marker_count) { continue; }
+      if (Math.floor((pos - lineFirstCharIndex)) < marker_count) { continue; }
 
       // make sure tail has spaces only
-      pos -= (pos - start) % marker_len;
       pos = state.skipSpaces(pos);
 
-      if (pos < max) { continue; }
+      if (pos < lineLastCharIndex) { continue; }
 
       // found!
-      auto_closed = true;
+      front_matter_end_found = true;
       break;
     }
 
@@ -92,7 +100,7 @@ module.exports = function front_matter_plugin(md, cb) {
     state.parentType = 'container';
 
     // this will prevent lazy continuations from ever going past our end marker
-    state.lineMax = nextLine;
+    state.lineMax = currentLine;
 
     token        = state.push('front_matter', null, 0);
     token.hidden = true;
@@ -102,9 +110,9 @@ module.exports = function front_matter_plugin(md, cb) {
 
     state.parentType = old_parent;
     state.lineMax = old_line_max;
-    state.line = nextLine + (auto_closed ? 1 : 0);
+    state.line = currentLine + (front_matter_end_found ? 1 : 0);
 
-    cb(state.src.slice(start_content, start - 1))
+    cb(state.src.slice(start_content, lineFirstCharIndex - 1))
 
     return true;
   }
